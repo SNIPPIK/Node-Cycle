@@ -41,7 +41,7 @@ const cycles = new class LowerCycle<T extends any> extends TaskCycle<T> {
             // Check function
             filter: (item: T) => true,
 
-            // Execute function of duration
+            // Execution of the function after the specified time, taking into account the filter
             execute: (item: T) => {
                 // Your code
             }
