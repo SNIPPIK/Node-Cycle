@@ -23,7 +23,7 @@ export abstract class BaseCycle<T = unknown> extends Set<T> {
      * @description Время для высчитывания
      * @private
      */
-    private loop: number = 0;
+    private tickTime: number = 0;
 
     /**
      * @description Временное число отспавания цикла в милисекундах
@@ -32,20 +32,28 @@ export abstract class BaseCycle<T = unknown> extends Set<T> {
     private drift: number = 0;
 
     /**
+     * @description Разбег между указанным duration
+     * @public
+     */
+    public get drifting(): number {
+        return Math.max(0, this.drift - this.perfLag);
+    };
+
+    /**
+     * @description Время циклической системы изнутри,
+     * @public
+     */
+    public get insideTime(): number {
+        return this.startTime + this.tickTime;
+    };
+
+    /**
      * @description Метод получения времени для обновления времени цикла
      * @protected
      * @default Date.now
      */
     protected get time(): number {
         return Date.now();
-    };
-
-    /**
-     * @description Разбег между указанным duration
-     * @public
-     */
-    public get drifting(): number {
-        return Math.max(0, this.drift - this.perfLag);
     };
 
     /**
@@ -63,8 +71,10 @@ export abstract class BaseCycle<T = unknown> extends Set<T> {
 
         // Запускаем цикл, если добавлен первый объект
         if (this.size === 1 && this.startTime === 0) {
-            this.startTime = this.time;
-            setImmediate(this._stepCycle);
+            setImmediate(() => {
+                this.startTime = this.time;
+                this._stepCycle();
+            });
         }
 
         return this;
@@ -79,7 +89,7 @@ export abstract class BaseCycle<T = unknown> extends Set<T> {
         for (const item of this) this.delete(item);
 
         this.startTime = 0;
-        this.loop = 0;
+        this.tickTime = 0;
 
         // Чистимся от drift состовляющих
         this.drift = 0;
@@ -101,10 +111,10 @@ export abstract class BaseCycle<T = unknown> extends Set<T> {
         // Проверяем цикл на наличие объектов
         if (this.size === 0) return this.reset();
 
-        // Номер прогона цикла
-        this.loop++;
+        // Время тика
+        this.tickTime += duration;
 
-        const nextTime = this.startTime + (this.loop * duration);
+        const nextTime = (this.startTime + this.tickTime);
         const delay = Math.max(0, nextTime - this.time);
 
         // Цикл отстал, подтягиваем loop вперёд
@@ -142,15 +152,17 @@ export abstract class BaseCycle<T = unknown> extends Set<T> {
         if (EventLLag > 0) this.perfLag = EventLLag;
         else this.perfLag = 0;
 
-        // Номер прогона цикла
-        this.loop += duration;
+        // Время тика
+        this.tickTime += duration;
 
-        const nextTime = (this.startTime + this.loop) - EventLLag;
+        const nextTime = (this.startTime + this.tickTime) - EventLLag;
         let delay = Math.max(0, (nextTime - this.time));
+
+        // Отладка
+        //console.log(`Тик ${this.tickTime / 20}: Дрейф ${this.drifting.toFixed(3)} ms`);
 
         // Учитываем большой дрифт
         const drift = this.drift + EventLLag;
-        if (drift > 0) delay -= drift;
 
         // Цикл отстал, подтягиваем loop вперёд
         if (delay <= 0) {
