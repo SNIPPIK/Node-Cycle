@@ -1,0 +1,24 @@
+{
+  "name": "@snpk/cycle",
+  "version": "0.0.1",
+  "homepage": "https://github.com/SNIPPIK/Node-cycle",
+  "main": "dist/src/index",
+  "types": "src/index.ts",
+  "author": {
+    "name": "SNIPPIK",
+    "url": "https://github.com/SNIPPIK"
+  },
+  "license": "BSD-3-Clause",
+  "preferGlobal": true,
+  "engineStrict": true,
+  "engines": {
+    "node": ">=23.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "build": "tsc"
+  }
+}
