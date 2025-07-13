@@ -1,6 +1,6 @@
 {
   "name": "@snpk/cycle",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "homepage": "https://github.com/SNIPPIK/Node-cycle",
   "main": "dist/src/index",
   "types": "src/index.ts",
@@ -20,5 +20,6 @@
   },
   "scripts": {
     "build": "tsc"
-  }
+  },
+  "keywords": ["event-loop", "cycle", "scheduler", "task-loop", "real-time", "drift-correction", "audio", "scheduling"]
 }

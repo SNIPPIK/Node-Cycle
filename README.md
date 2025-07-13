@@ -32,9 +32,6 @@ const cycles = new class LowerCycle<T extends any> extends TaskCycle<T> {
             // Time until next cycle run
             duration: 20,
             
-            // It is necessary to take into account the event loop/timer drift
-            drift: false,
-
             // Custom functions (if you want to change the execution logic a little)
             custom: {},
 
