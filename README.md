@@ -24,13 +24,16 @@
 
 ### How to use
 ```ts
-import { TaskCycle } from '@snpk/cycle';
+import { TaskCycle } from 'snpk-cycle';
 
 const cycles = new class LowerCycle<T extends any> extends TaskCycle<T> {
     public constructor() {
         super({
             // Time until next cycle run
             duration: 20,
+            
+            // If dot not need drifting in cycle
+            drift: false,
             
             // Custom functions (if you want to change the execution logic a little)
             custom: {},

@@ -1,13 +1,27 @@
 /**
  * @author SNIPPIK
+ * @description 2 часа в миллисекундах
+ * @const ResetTime
+ */
+const ResetTime = 1000 * 60 * 60 * 2;
+
+/**
+ * @author SNIPPIK
  * @description Базовый класс цикла
  * @class BaseCycle
  * @extends Set
  * @abstract
+ * @private
  */
 abstract class BaseCycle<T = unknown> extends Set<T> {
     /**
-     * @description Последний сохраненный временной интервал тика
+     * @description Последний записанное значение performance.now(), нужно для улавливания event loop lags
+     * @private
+     */
+    private performance: number;
+
+    /**
+     * @description Последний сохраненный временной интервал
      * @private
      */
     private lastDelay: number;
@@ -25,23 +39,24 @@ abstract class BaseCycle<T = unknown> extends Set<T> {
     private tickTime: number = 0;
 
     /**
-     * @description Последнее зафиксированное число отставания
-     * @public
+     * @description Временное число отставания цикла в миллисекундах
+     * @private
      */
     private drift: number = 0;
 
     /**
-     * @description Разбег между указанным duration, если он отрицательный то проблема в event loop
+     * @description Разбег между указанным duration
+     * @returns number
      * @public
      */
     public get drifting(): number {
-        const current = this.startTime + this.tickTime;
-
-        return current - this.time;
+        // Высчитываем реальный drift, между временем цикла и реальным
+        return this.drift;
     };
 
     /**
      * @description Время циклической системы изнутри
+     * @returns number
      * @public
      */
     public get insideTime(): number {
@@ -50,6 +65,7 @@ abstract class BaseCycle<T = unknown> extends Set<T> {
 
     /**
      * @description Последний зафиксированный промежуток выполнения
+     * @returns number
      * @public
      */
     public get delay(): number {
@@ -58,8 +74,9 @@ abstract class BaseCycle<T = unknown> extends Set<T> {
 
     /**
      * @description Метод получения времени для обновления времени цикла
-     * @protected
      * @default Date.now
+     * @returns number
+     * @protected
      */
     protected get time(): number {
         return Date.now();
@@ -70,7 +87,7 @@ abstract class BaseCycle<T = unknown> extends Set<T> {
      * @param item - Объект T
      * @public
      */
-    public add(item: T) {
+    public add(item: T): this {
         const existing = this.has(item);
 
         // Если добавляется уже существующий объект
@@ -89,22 +106,31 @@ abstract class BaseCycle<T = unknown> extends Set<T> {
 
     /**
      * @description Чистка цикла от всего
+     * @returns void
      * @public
      */
     public reset = (): void => {
-        // Удаляем все обьекты
-        for (const item of this) this.delete(item);
+        this.clear(); // Удаляем все объекты
 
         this.startTime = 0;
         this.tickTime = 0;
         this.lastDelay = null;
 
-        // Чистимся от drift состовляющих
+        // Чистимся от drift составляющих
         this.drift = 0;
+
+        // Чистим performance.now
+        this.performance = null;
+
+        // Запускаем Garbage Collector
+        setImmediate(() => {
+            if (typeof global.gc === "function") global.gc();
+        });
     };
 
     /**
      * @description Выполняет шаг цикла с учётом точного времени следующего запуска
+     * @returns void
      * @protected
      * @abstract
      */
@@ -112,55 +138,205 @@ abstract class BaseCycle<T = unknown> extends Set<T> {
 
     /**
      * @description Проверяем время для запуска цикла повторно, без учета дрифта
+     * @returns void
+     * @protected
      * @readonly
-     * @private
      */
-    protected readonly _stepCheckTimeCycle = (duration: number) => {
+    protected readonly _stepCheckTimeCycle = (duration: number): void => {
         // Проверяем цикл на наличие объектов
-        if (this.size === 0) {
-            // Запускаем Garbage Collector
-            setImmediate(() => {
-                if (typeof global.gc === "function") global.gc();
-            });
+        if (this.size === 0) return this.reset();
 
-            return this.reset();
-        }
+        // Получаем следующее время
+        const actualTime = this.startTime + this.tickTime + duration;
 
         // Время тика
         this.tickTime += duration;
 
-        const realTime = (this.startTime + this.tickTime) + this.drift;
-        return this._runTimeout(realTime);
+        // Запускаем таймер
+        return this._runTimeout(duration, actualTime, this._stepCycle);
     };
 
     /**
-     * @description Запуск setTimeout или setImmediate
-     * @param actualTime - Текущее время + время шага - дрейф
+     * @description Проверяем время для запуска цикла повторно с учетом дрифта цикла
+     * @returns void
+     * @protected
+     * @readonly
      */
-    private _runTimeout = (actualTime: number) => {
-        const now = actualTime - this.time;
+    protected readonly _stepCheckTimeCycleDrift = (duration: number): void => {
+        if (this.size === 0) return this.reset();
 
-        now <= 0 ?
-            setImmediate(this._stepCycle) :
-            setTimeout(() => {
-                this._stepCycle();
+        const expectedNextTime = this.startTime + this.tickTime + duration;
 
-                // Новый дрифт
-                const currentDrift = (actualTime - this.time);
+        // Корректируем шаги, для точности цикла
+        const correction = Math.floor((this.time - expectedNextTime) / duration);
+        const driftSteps = Math.max(1, correction);
+        const tickTime = driftSteps * duration;
+        this.tickTime += tickTime;
 
-                // Плавно изменяем drift
-                this.drift = (0.9 * currentDrift) + (0.1 * this.drift);
-            }, now);
+        // Коррекция event loop lag
+        const performanceNow = performance.now();
+        const eventLoopLag = this.performance
+            ? Math.max(0, (performanceNow - this.performance) - (tickTime + (driftSteps / 0.5)))
+            : duration;
+        this.performance = performanceNow;
 
-        this.lastDelay = now;
+        // Финальная цель для next timeout (с учетом лагов и дрейфа)
+        const nextTargetTime = (expectedNextTime + this.drift) - eventLoopLag;
+
+        // Запускаем таймер
+        this._runTimeout(duration, nextTargetTime, () => {
+            const tickStart = this.time;
+
+            // Делаем шаг
+            this._stepCycle();
+
+            const tickEnd = this.time;
+            const actualStepDuration = tickEnd - tickStart;
+
+            // Обновляем drift на основе фактического выполнения
+            this.drift = Math.max(0, actualStepDuration);
+        });
+    };
+
+    /**
+     * @description Функция запуска timeout или immediate функции
+     * @param duration - Реальное время
+     * @param actualTime  - Внутренне время с учетом прошлого тика
+     * @param callback    - Функция для высчитывания
+     * @returns void
+     * @protected
+     * @readonly
+     */
+    protected readonly _runTimeout = (duration: number, actualTime: number, callback: () => void): void => {
+        const delay = Math.max(0, actualTime - this.time);
+
+        // Периодический сброс каждые N время для стабилизации
+        if (this.tickTime >= ResetTime) {
+            this.startTime = this.time;
+            this.tickTime = 0;
+            this.drift = 0;
+            this.lastDelay = null;
+        }
+
+        // Если delay слишком мал
+        if (delay <= 0) {
+            if (this.lastDelay && this.lastDelay < 1) {
+                this.lastDelay = duration;
+                setTimeout(callback, duration);
+                return;
+            }
+
+            // Переходим к следующему шагу в следующем тике
+            process.nextTick(this._stepCycle);
+            return;
+        }
+
+        this.lastDelay = delay;
+        setTimeout(callback, delay);
+    };
+}
+
+/**
+ * @author SNIPPIK
+ * @description Класс для удобного управления циклами
+ * @class TaskCycle
+ * @abstract
+ * @public
+ */
+export abstract class TaskCycle<T = unknown> extends BaseCycle<T> {
+    /**
+     * @description Метод получения времени для обновления времени цикла
+     * @protected
+     * @default Date.now
+     */
+    protected get time(): number {
+        if (!this.options.drift) return Number(process.hrtime.bigint()) / 1e6;
+        return Date.now();
+    };
+
+    /**
+     * @description Создаем класс и добавляем параметры
+     * @param options - Параметры для работы класса
+     * @constructor
+     * @protected
+     */
+    protected constructor(public readonly options: TaskCycleConfig<T>) {
+        super();
+    };
+
+    /**
+     * @description Добавляем элемент в очередь
+     * @param item - Объект T
+     * @returns this
+     * @public
+     */
+    public add = (item: T): this => {
+        if (this.options.custom?.push) this.options.custom?.push(item);
+        else if (this.has(item)) this.delete(item);
+
+        super.add(item);
+        return this;
+    };
+
+    /**
+     * @description Удаляем элемент из очереди
+     * @param item - Объект T
+     * @returns boolean
+     * @public
+     */
+    public delete = (item: T) => {
+        const index = this.has(item);
+
+        // Если есть объект в базе
+        if (index) {
+            if (this.options.custom?.remove) this.options.custom.remove(item);
+            super.delete(item);
+        }
+
+        return true;
+    };
+
+    /**
+     * @description Здесь будет выполнен прогон объектов для выполнения execute
+     * @returns Promise<void>
+     * @readonly
+     * @private
+     */
+    protected _stepCycle = async (): Promise<void> => {
+        await this.options?.custom?.step?.();
+
+        // Запускаем цикл
+        for (const item of this) {
+            // Если объект не готов
+            if (!this.options.filter(item)) continue;
+
+            try {
+                this.options.execute(item);
+            } catch (error) {
+                this.delete(item);
+                console.log(error);
+            }
+        }
+
+        // Запускаем цикл повторно
+        if (this.options.drift) return this._stepCheckTimeCycle(this.options.duration);
+        return this._stepCheckTimeCycleDrift(this.options.duration);
     };
 }
 
 /**
  * @author SNIPPIK
  * @description Интерфейс для опций BaseCycle
+ * @private
  */
-export interface BaseCycleConfig<T> {
+interface BaseCycleConfig<T> {
+    /**
+     * @description Допустим ли drift, если требуется учитывать дрифт для стабилизации цикла
+     * @readonly
+     * @public
+     */
+    readonly drift: boolean;
+
     /**
      * @description Как фильтровать объекты, вдруг объект еще не готов
      * @readonly
@@ -197,79 +373,6 @@ export interface BaseCycleConfig<T> {
          */
         readonly step?: () => Promise<void>;
     }
-}
-
-/**
- * @author SNIPPIK
- * @description Класс для удобного управления циклами
- * @class TaskCycle
- * @abstract
- * @public
- */
-export abstract class TaskCycle<T = unknown> extends BaseCycle<T> {
-    /**
-     * @description Создаем класс и добавляем параметры
-     * @param options - Параметры для работы класса
-     * @protected
-     */
-    protected constructor(public readonly options: TaskCycleConfig<T>) {
-        super();
-    };
-
-    /**
-     * @description Добавляем элемент в очередь
-     * @param item - Объект T
-     * @public
-     */
-    public add = (item: T) => {
-        if (this.options.custom?.push) this.options.custom?.push(item);
-        else if (this.has(item)) this.delete(item);
-
-        super.add(item);
-        return this;
-    };
-
-    /**
-     * @description Удаляем элемент из очереди
-     * @param item - Объект T
-     * @public
-     */
-    public delete = (item: T) => {
-        const index = this.has(item);
-
-        // Если есть объект в базе
-        if (index) {
-            if (this.options.custom?.remove) this.options.custom.remove(item);
-            super.delete(item);
-        }
-
-        return true;
-    };
-
-    /**
-     * @description Здесь будет выполнен прогон объектов для выполнения execute
-     * @readonly
-     * @private
-     */
-    protected _stepCycle = async () => {
-        await this.options?.custom?.step?.();
-
-        // Запускаем цикл
-        for (const item of this) {
-            // Если объект не готов
-            if (!this.options.filter(item)) continue;
-
-            try {
-                await this.options.execute(item);
-            } catch (error) {
-                this.delete(item);
-                console.log(error);
-            }
-        }
-
-        // Запускаем цикл повторно
-        return this._stepCheckTimeCycle(this.options.duration);
-    };
 }
 
 /**
