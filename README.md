@@ -7,13 +7,13 @@
 
 ## 🧪 Tested For
 - ✅ Discord UDP/RTP VoIP streams
-- ✅ Real-world drift: 0.000–0.003ms
+- ✅ Real-world drift: `~0.05ms`
 - ✅ FFmpeg filter loops (EQ, tempo, pitch, etc.)
 
 ---
 ## 🚀 Features
 
-- 📏 **Sub-millisecond drift correction** using `performance.now()`
+- 📏 **Sub-millisecond drift correction** using `performance.now()` + `Date.now`
 - 🔁 **Stable timing** even under event loop pressure
 - 🎯 **Self-correcting loop** with zero-delay recovery
 - 🧠 **No native bindings**, 100% JavaScript

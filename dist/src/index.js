@@ -1,15 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TaskCycle = void 0;
-const ResetTime = 1000 * 60 * 60 * 2;
+exports.PromiseCycle = exports.TaskCycle = void 0;
+const perf_hooks_1 = require("perf_hooks");
 class BaseCycle extends Set {
     performance;
+    prevEventLoopLag;
     lastDelay;
     startTime = 0;
     tickTime = 0;
     drift = 0;
     get drifting() {
-        return this.drift;
+        return this.drift + this.prevEventLoopLag;
     }
     ;
     get insideTime() {
@@ -18,6 +19,14 @@ class BaseCycle extends Set {
     ;
     get delay() {
         return this.lastDelay;
+    }
+    ;
+    set delay(duration) {
+        const expectedTime = this.startTime + this.tickTime + duration;
+        const step = Math.max(1, (this.time - expectedTime) / duration);
+        const timeCorrection = step * duration;
+        this.tickTime += timeCorrection;
+        this.lastDelay = timeCorrection;
     }
     ;
     get time() {
@@ -36,76 +45,51 @@ class BaseCycle extends Set {
         return this;
     }
     ;
-    reset = () => {
+    reset() {
         this.clear();
         this.startTime = 0;
         this.tickTime = 0;
-        this.lastDelay = null;
+        this.lastDelay = 0;
         this.drift = 0;
-        this.performance = null;
-        setImmediate(() => {
-            if (typeof global.gc === "function")
-                global.gc();
-        });
-    };
+        this.performance = 0;
+        this.prevEventLoopLag = 0;
+    }
+    ;
     _stepCheckTimeCycle = (duration) => {
         if (this.size === 0)
             return this.reset();
-        const actualTime = this.startTime + this.tickTime + duration;
-        this.tickTime += duration;
-        return this._runTimeout(duration, actualTime, this._stepCycle);
+        this.delay = duration;
+        return this._runTimeout(this.insideTime, this._stepCycle);
     };
     _stepCheckTimeCycleDrift = (duration) => {
         if (this.size === 0)
             return this.reset();
-        const expectedNextTime = this.startTime + this.tickTime + duration;
-        const correction = Math.floor((this.time - expectedNextTime) / duration);
-        const driftSteps = Math.max(1, correction);
-        const tickTime = driftSteps * duration;
-        this.tickTime += tickTime;
-        const performanceNow = performance.now();
-        const eventLoopLag = this.performance
-            ? Math.max(0, (performanceNow - this.performance) - (tickTime + (driftSteps / 0.5)))
-            : duration;
-        this.performance = performanceNow;
-        const nextTargetTime = (expectedNextTime + this.drift) - eventLoopLag;
-        this._runTimeout(duration, nextTargetTime, () => {
-            const tickStart = this.time;
+        const tickStart = this.time;
+        this.delay = duration;
+        const lags = this._calculateLags(this.lastDelay);
+        const nextTargetTime = this.insideTime - this.drift - lags;
+        this._runTimeout(nextTargetTime, () => {
             this._stepCycle();
             const tickEnd = this.time;
-            const actualStepDuration = tickEnd - tickStart;
-            this.drift = Math.max(0, actualStepDuration);
+            this.drift = this._compensator(0.9, this.drift, tickEnd - tickStart);
         });
     };
-    _runTimeout = (duration, actualTime, callback) => {
+    _runTimeout = (actualTime, callback) => {
         const delay = Math.max(0, actualTime - this.time);
-        if (this.tickTime >= ResetTime) {
-            this.startTime = this.time;
-            this.tickTime = 0;
-            this.drift = 0;
-            this.lastDelay = null;
-        }
-        if (delay <= 0) {
-            if (this.lastDelay && this.lastDelay < 1) {
-                this.lastDelay = duration;
-                setTimeout(callback, duration);
-                return;
-            }
-            process.nextTick(this._stepCycle);
-            return;
-        }
-        this.lastDelay = delay;
-        setTimeout(callback, delay);
+        (delay < 1 ? process.nextTick : setTimeout)(callback, delay);
+    };
+    _calculateLags = (duration) => {
+        const performanceNow = perf_hooks_1.performance.now();
+        const driftEvent = this.performance ? Math.max(0, (performanceNow - this.performance) - duration) : 0;
+        this.performance = performanceNow;
+        return this.prevEventLoopLag = this.prevEventLoopLag !== undefined ? this._compensator(0.9, this.prevEventLoopLag, driftEvent) : driftEvent;
+    };
+    _compensator = (alpha, old, current) => {
+        return alpha * old + (1 - alpha) * current;
     };
 }
 class TaskCycle extends BaseCycle {
     options;
-    get time() {
-        if (!this.options.drift)
-            return Number(process.hrtime.bigint()) / 1e6;
-        return Date.now();
-    }
-    ;
     constructor(options) {
         super();
         this.options = options;
@@ -129,7 +113,7 @@ class TaskCycle extends BaseCycle {
         return true;
     };
     _stepCycle = async () => {
-        await this.options?.custom?.step?.();
+        this.options?.custom?.step?.();
         for (const item of this) {
             if (!this.options.filter(item))
                 continue;
@@ -147,3 +131,47 @@ class TaskCycle extends BaseCycle {
     };
 }
 exports.TaskCycle = TaskCycle;
+class PromiseCycle extends BaseCycle {
+    options;
+    constructor(options) {
+        super();
+        this.options = options;
+    }
+    ;
+    add = (item) => {
+        if (this.options.custom?.push)
+            this.options.custom?.push(item);
+        else if (this.has(item))
+            this.delete(item);
+        super.add(item);
+        return this;
+    };
+    delete = (item) => {
+        const index = this.has(item);
+        if (index) {
+            if (this.options.custom?.remove)
+                this.options.custom.remove(item);
+            super.delete(item);
+        }
+        return true;
+    };
+    _stepCycle = async () => {
+        for (const item of this) {
+            if (!this.options.filter(item))
+                continue;
+            try {
+                const bool = await this.options.execute(item);
+                if (!bool)
+                    this.delete(item);
+            }
+            catch (error) {
+                this.delete(item);
+                console.log(error);
+            }
+        }
+        if (this.options.drift)
+            return this._stepCheckTimeCycle(30e3);
+        return this._stepCheckTimeCycleDrift(30e3);
+    };
+}
+exports.PromiseCycle = PromiseCycle;
